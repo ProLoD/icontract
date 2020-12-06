@@ -11,7 +11,7 @@ import math
 import unittest
 import datetime
 import decimal
-from typing import List, Optional, Tuple, Any, TypedDict, NamedTuple
+from typing import List, Optional, Tuple, Any, TypedDict, NamedTuple, Union
 
 import hypothesis.strategies
 
@@ -536,8 +536,33 @@ class TestWithInferredStrategiesOnClasses(unittest.TestCase):
 
         icontract.integration.with_hypothesis.test_with_inferred_strategies(some_func)
 
+    def test_union(self) -> None:
+        class A:
+            @icontract.require(lambda x: x > 0)
+            def __init__(self, x: int):
+                self.x = x
 
-# TODO: test with union!
+            def __repr__(self) -> str:
+                return "A(x={})".format(self.x)
+
+        class B:
+            @icontract.require(lambda x: x < 0)
+            def __init__(self, x: int):
+                self.x = x
+
+            def __repr__(self) -> str:
+                return "B(x={})".format(self.x)
+
+        def some_func(a_or_b: Union[A, B]) -> None:
+            pass
+
+        strategies = icontract.integration.with_hypothesis.infer_strategies(some_func)
+        self.assertEqual(
+            "{'a_or_b': one_of(builds(A, x=integers(min_value=1)), builds(B, x=integers(max_value=-1)))}",
+            str(strategies))
+
+        icontract.integration.with_hypothesis.test_with_inferred_strategies(some_func)
+
 
 if __name__ == '__main__':
     unittest.main()

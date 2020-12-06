@@ -1,4 +1,5 @@
 # yapf: disable
+# pylint: disable=all
 # This is a patched ``from_typing_type`` part of
 # https://github.com/HypothesisWorks/hypothesis/blob/aebab4ef071fac4fb5d1dcce523f817112c00047/hypothesis-python/src/hypothesis/strategies/_internal/types.py
 

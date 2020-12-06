@@ -478,9 +478,9 @@ def builds_with_preconditions(a_type: Type[T]) -> hypothesis.strategies.SearchSt
     if inspect.isfunction(init):
         strategies = infer_strategies(init)
     elif isinstance(init, icontract._checkers._SLOT_WRAPPER_TYPE):
-        # We have to distinguish this special case which is used by named
-        # tuples and possibly other optimized data structures.
-        # In those cases, we have to inspect __new__ instead of __init__.
+        # We have to distinguish this special case which is used by named tuples and
+        # possibly other optimized data structures.
+        # In those cases, we have to infer the strategy based on __new__ instead of __init__.
         new = getattr(a_type, "__new__")
         assert new is not None, "Expected __new__ in {} if __init__ is a slot wrapper.".format(a_type)
         strategies = infer_strategies(new)
@@ -606,6 +606,11 @@ def test_with_inferred_strategies(func: CallableT) -> None:
 
     wrapped = hypothesis.given(**strategies)(execute)
     wrapped()
+
+# TODO: don't forget to mention in readme that behavioral subtyping and inheritance of preconditions is important!
+
+# TODO: improve benchmark by testing with 1, 2 and 3 arguments, all greater than 0 -- demonstrate the curse of dimensionality
+# TODO: benchmark dpcontracts
 
 # TODO: implement matching re.match and re.Pattern.math
 # TODO: use recomputed values to figure out if the name is a re.Pattern and the method is "match"
