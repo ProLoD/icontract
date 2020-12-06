@@ -3,15 +3,14 @@
 # pylint: disable=unused-argument
 # pylint: disable=no-value-for-parameter
 import abc
-import collections
 import dataclasses
+import datetime
+import decimal
 import enum
 import fractions
 import math
 import unittest
-import datetime
-import decimal
-from typing import List, Optional, Tuple, Any, TypedDict, NamedTuple, Union
+from typing import List, Optional, Any, TypedDict, NamedTuple, Union
 
 import hypothesis.strategies
 
@@ -19,6 +18,8 @@ import icontract.integration.with_hypothesis
 
 
 class TestAssumePreconditions(unittest.TestCase):
+    # TODO: test assume preconditions that they fail with the expected exceptions
+    # TODO: test assume preconditions that they pass with no exception
     def test_without_preconditions(self) -> None:
         recorded_inputs = []  # type: List[Any]
 
@@ -153,30 +154,30 @@ class TestWithInferredStrategies(unittest.TestCase):
         assert type_error is not None
         self.assertTrue(
             str(type_error).startswith(
-                'The argument types can not be inferred since the type hints are missing for the function:'))
+                'No strategies could be inferred for the function: '))
 
     def test_without_preconditions(self) -> None:
-        recorded_inputs = []  # type: List[Any]
-
         def some_func(x: int) -> None:
-            recorded_inputs.append(x)
+            pass
+
+        strategies = icontract.integration.with_hypothesis.infer_strategies(some_func)
+        self.assertEqual(
+            "{'x': integers()}",
+            str(strategies))
 
         icontract.integration.with_hypothesis.test_with_inferred_strategies(some_func)
-
-        # 10 is an arbitrary, but plausible value.
-        self.assertGreater(len(recorded_inputs), 10)
 
     def test_unmatched_pattern(self) -> None:
-        recorded_inputs = []  # type: List[Any]
-
         @icontract.require(lambda x: x > 0 and x > math.sqrt(x))
         def some_func(x: float) -> None:
-            recorded_inputs.append(x)
+            pass
+
+        strategies = icontract.integration.with_hypothesis.infer_strategies(some_func)
+        self.assertEqual(
+            "{'x': floats().filter(lambda x: x > 0 and x > math.sqrt(x))}",
+            str(strategies))
 
         icontract.integration.with_hypothesis.test_with_inferred_strategies(some_func)
-
-        # 10 is an arbitrary, but plausible value.
-        self.assertGreater(len(recorded_inputs), 10)
 
     def test_with_multiple_preconditions(self) -> None:
         recorded_inputs = []  # type: List[Any]
@@ -191,17 +192,18 @@ class TestWithInferredStrategies(unittest.TestCase):
         @icontract.require(lambda y: 1 <= y < 90)
         @icontract.require(lambda z: 0 > z >= -math.sqrt(hundred))
         def some_func(x: int, y: int, z: int) -> None:
-            recorded_inputs.append((x, y, z))
+            pass
+
+        strategies = icontract.integration.with_hypothesis.infer_strategies(some_func)
+        self.assertEqual(
+            "{'x': integers(min_value=2, max_value=89), 'y': integers(min_value=2, max_value=89), "
+            "'z': integers(min_value=-9.0, max_value=-1)}",
+            str(strategies))
 
         icontract.integration.with_hypothesis.test_with_inferred_strategies(some_func)
 
-        # 10 is an arbitrary, but plausible value.
-        self.assertGreater(len(recorded_inputs), 10)
-
     def test_with_dates(self) -> None:
         SOME_DATE = datetime.date(2014, 3, 2)
-
-        recorded_inputs = []  # type: List[Any]
 
         # The preconditions were picked s.t. to also test that we can recompute everything.
         @icontract.require(lambda a: a < SOME_DATE + datetime.timedelta(days=3))
@@ -210,83 +212,88 @@ class TestWithInferredStrategies(unittest.TestCase):
         @icontract.require(lambda d: d < (
                 SOME_DATE if SOME_DATE > datetime.date(2020, 1, 1) else datetime.date(2020, 12, 5)))
         def some_func(a: datetime.date, b: datetime.date, c: datetime.date, d: datetime.date) -> None:
-            recorded_inputs.append((a, b, c, d))
+            pass
+
+        strategies = icontract.integration.with_hypothesis.infer_strategies(some_func)
+        self.assertEqual(
+            "{'a': dates(max_value=datetime.date(2014, 3, 5)), "
+            "'b': dates(max_value=datetime.date(2014, 3, 4)), "
+            "'c': dates(max_value=datetime.date(2020, 1, 1)), "
+            "'d': dates(max_value=datetime.date(2020, 12, 5))}",
+            str(strategies))
 
         icontract.integration.with_hypothesis.test_with_inferred_strategies(some_func)
-
-        # 10 is an arbitrary, but plausible value.
-        self.assertGreater(len(recorded_inputs), 10)
 
     def test_with_datetimes(self) -> None:
         SOME_DATETIME = datetime.datetime(2014, 3, 2, 10, 20, 30)
 
-        recorded_inputs = []  # type: List[Any]
-
         @icontract.require(lambda a: a < SOME_DATETIME)
         def some_func(a: datetime.datetime) -> None:
-            recorded_inputs.append(a)
+            pass
+
+        strategies = icontract.integration.with_hypothesis.infer_strategies(some_func)
+        self.assertEqual(
+            "{'a': datetimes(max_value=datetime.datetime(2014, 3, 2, 10, 20, 30))}",
+            str(strategies))
 
         icontract.integration.with_hypothesis.test_with_inferred_strategies(some_func)
-
-        # 10 is an arbitrary, but plausible value.
-        self.assertGreater(len(recorded_inputs), 10)
 
     def test_with_times(self) -> None:
         SOME_TIME = datetime.time(1, 2, 3)
 
-        recorded_inputs = []  # type: List[Any]
-
         @icontract.require(lambda a: a < SOME_TIME)
         def some_func(a: datetime.time) -> None:
-            recorded_inputs.append(a)
+            pass
+
+        strategies = icontract.integration.with_hypothesis.infer_strategies(some_func)
+        self.assertEqual(
+            "{'a': times(max_value=datetime.time(1, 2, 3))}",
+            str(strategies))
 
         icontract.integration.with_hypothesis.test_with_inferred_strategies(some_func)
-
-        # 10 is an arbitrary, but plausible value.
-        self.assertGreater(len(recorded_inputs), 10)
 
     def test_with_timedeltas(self) -> None:
         SOME_TIMEDELTA = datetime.timedelta(days=3)
 
-        recorded_inputs = []  # type: List[Any]
-
         @icontract.require(lambda a: a < SOME_TIMEDELTA)
         def some_func(a: datetime.timedelta) -> None:
-            recorded_inputs.append(a)
+            pass
+
+        strategies = icontract.integration.with_hypothesis.infer_strategies(some_func)
+        self.assertEqual(
+            "{'a': timedeltas(max_value=datetime.timedelta(days=3))}",
+            str(strategies))
 
         icontract.integration.with_hypothesis.test_with_inferred_strategies(some_func)
-
-        # 10 is an arbitrary, but plausible value.
-        self.assertGreater(len(recorded_inputs), 10)
 
     def test_with_fractions(self) -> None:
         SOME_FRACTION = fractions.Fraction(3, 2)
 
-        recorded_inputs = []  # type: List[Any]
-
         @icontract.require(lambda a: a < SOME_FRACTION)
         def some_func(a: fractions.Fraction) -> None:
-            recorded_inputs.append(a)
+            pass
+
+        strategies = icontract.integration.with_hypothesis.infer_strategies(some_func)
+        self.assertEqual(
+            "{'a': fractions(max_value=Fraction(3, 2))}",
+            str(strategies))
 
         icontract.integration.with_hypothesis.test_with_inferred_strategies(some_func)
-
-        # 10 is an arbitrary, but plausible value.
-        self.assertGreater(len(recorded_inputs), 10)
 
     def test_with_decimals(self) -> None:
         SOME_DECIMAL = decimal.Decimal(10)
 
-        recorded_inputs = []  # type: List[Any]
-
         @icontract.require(lambda a: not decimal.Decimal.is_nan(a))
         @icontract.require(lambda a: a < SOME_DECIMAL)
         def some_func(a: decimal.Decimal) -> None:
-            recorded_inputs.append(a)
+            pass
+
+        strategies = icontract.integration.with_hypothesis.infer_strategies(some_func)
+        self.assertEqual(
+            "{'a': decimals(max_value=Decimal('10')).filter(lambda a: not decimal.Decimal.is_nan(a))}",
+            str(strategies))
 
         icontract.integration.with_hypothesis.test_with_inferred_strategies(some_func)
-
-        # 10 is an arbitrary, but plausible value.
-        self.assertGreater(len(recorded_inputs), 10)
 
     def test_with_weakened_preconditions(self) -> None:
         class A(icontract.DBC):
@@ -295,22 +302,24 @@ class TestWithInferredStrategies(unittest.TestCase):
             def some_func(self, x: int) -> None:
                 pass
 
-        recorded_inputs = []  # type: List[int]
-
         class B(A):
             @icontract.require(lambda x: 0 < x < 20)
             @icontract.require(lambda x: x % 7 == 0)
             def some_func(self, x: int) -> None:
                 # The inputs from B.some_func need to satisfy either their own preconditions or
                 # the preconditions of A.some_func ("require else").
-                recorded_inputs.append(x)
+                pass
 
         b = B()
 
-        icontract.integration.with_hypothesis.test_with_inferred_strategies(b.some_func)
+        strategies = icontract.integration.with_hypothesis.infer_strategies(b.some_func)
+        self.assertEqual(
+            "{'x': one_of("
+            "integers(min_value=1, max_value=19).filter(lambda x: x % 3 == 0), "
+            "integers(min_value=1, max_value=19).filter(lambda x: x % 7 == 0))}",
+            str(strategies))
 
-        # 10 is an arbitrary, but plausible value.
-        self.assertGreater(len(recorded_inputs), 10)
+        icontract.integration.with_hypothesis.test_with_inferred_strategies(b.some_func)
 
 
 class TestWithInferredStrategiesOnClasses(unittest.TestCase):
@@ -323,7 +332,9 @@ class TestWithInferredStrategiesOnClasses(unittest.TestCase):
             pass
 
         strategies = icontract.integration.with_hypothesis.infer_strategies(some_func)
-        self.assertEqual("{'a': builds(A)}", str(strategies))
+        self.assertEqual(
+            "{'a': builds(A)}",
+            str(strategies))
 
         icontract.integration.with_hypothesis.test_with_inferred_strategies(some_func)
 
@@ -339,7 +350,7 @@ class TestWithInferredStrategiesOnClasses(unittest.TestCase):
             pass
 
         strategies = icontract.integration.with_hypothesis.infer_strategies(some_func)
-        self.assertEqual("{'a': builds(A)}", str(strategies))
+        self.assertEqual("{'a': builds(A, x=integers())}", str(strategies))
 
         icontract.integration.with_hypothesis.test_with_inferred_strategies(some_func)
 
@@ -431,7 +442,7 @@ class TestWithInferredStrategiesOnClasses(unittest.TestCase):
         strategies = icontract.integration.with_hypothesis.infer_strategies(some_func)
         self.assertEqual(
             "{'a': just("
-            "<class 'test_hypothesis.TestWithInferredStrategiesOnClasses.test_inheritance.<locals>.B'>)"
+            "<class 'test_hypothesis.TestWithInferredStrategiesOnClasses.test_abstract_class.<locals>.B'>)"
             ".flatmap(from_type)}",
             str(strategies))
 

@@ -604,6 +604,11 @@ def test_with_inferred_strategies(func: CallableT) -> None:
 
     strategies = infer_strategies(func=func)
 
+    if len(strategies) == 0:
+        raise TypeError(
+            ("No strategies could be inferred for the function: {}. "
+             "Have you provided type hints for the arguments?").format(func))
+
     wrapped = hypothesis.given(**strategies)(execute)
     wrapped()
 
