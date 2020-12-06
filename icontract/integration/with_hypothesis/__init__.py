@@ -473,13 +473,22 @@ def builds_with_preconditions(a_type: Type[T]) -> hypothesis.strategies.SearchSt
     this module. This allows you to recursively build complex object graphs which will satisfy
     the preconditions of their constructors in a completely seamless manner.
     """
-    init_func = getattr(a_type, "__init__")
+    init = getattr(a_type, "__init__")
 
-    strategies = infer_strategies(init_func)
+    if inspect.isfunction(init):
+        strategies = infer_strategies(init)
+    elif isinstance(init, icontract._checkers._SLOT_WRAPPER_TYPE):
+        # We have to distinguish this special case which is used by named
+        # tuples and possibly other optimized data structures.
+        # In those cases, we have to inspect __new__ instead of __init__.
+        new = getattr(a_type, "__new__")
+        assert new is not None, "Expected __new__ in {} if __init__ is a slot wrapper.".format(a_type)
+        strategies = infer_strategies(new)
+    else:
+        raise AssertionError(
+            "Expected __init__ to be either a function or a slot wrapper, but got: {}".format(type(init)))
+
     return hypothesis.strategies.builds(a_type, **strategies)
-
-# TODO: document in readme that all classes need to inherit from DBC
-hypothesis.strategies.register_type_strategy(custom_type=icontract.DBC, strategy=builds_with_preconditions)
 
 # TODO: document it in the README so that people can debug
 # yapf: disable
@@ -594,8 +603,6 @@ def test_with_inferred_strategies(func: CallableT) -> None:
         func(*args, **kwargs)
 
     strategies = infer_strategies(func=func)
-
-    print(f"final strategies in integrations is {strategies!r}")  # TODO: debug
 
     wrapped = hypothesis.given(**strategies)(execute)
     wrapped()

@@ -1,23 +1,8 @@
-# This is a patched ``from_type`` and ``_from_type`` part of
+# yapf: disable
+# This is a patched ``_from_type`` part of
 # https://github.com/HypothesisWorks/hypothesis/blob/aebab4ef071fac4fb5d1dcce523f817112c00047/hypothesis-python/src/hypothesis/strategies/_internal/core.py
 
 # The original header is:
-#
-# This file is part of Hypothesis, which may be found at
-# https://github.com/HypothesisWorks/hypothesis/
-#
-# Most of this work is copyright (C) 2013-2020 David R. MacIver
-# (david@drmaciver.com), but it contains contributions by others. See
-# CONTRIBUTING.rst for a full list of people who may hold copyright, and
-# consult the git log if you need to determine who owns an individual
-# contribution.
-#
-# This Source Code Form is subject to the terms of the Mozilla Public License,
-# v. 2.0. If a copy of the MPL was not distributed with this file, You can
-# obtain one at https://mozilla.org/MPL/2.0/.
-#
-# END HEADER
-
 # This file is part of Hypothesis, which may be found at
 # https://github.com/HypothesisWorks/hypothesis/
 #
@@ -36,10 +21,16 @@
 import enum
 import sys
 import typing
+from decimal import Decimal
+from fractions import Fraction
 from inspect import isabstract
 from typing import (
+    Callable,
+    Hashable,
+    Tuple,
     Type,
     TypeVar,
+    Union,
 )
 
 import attr
@@ -51,25 +42,28 @@ from hypothesis.internal.reflection import (
     required_args,
 )
 from hypothesis.strategies._internal import SearchStrategy
+
+# (mristin, 2020-12-06) Import only what the patched from_type needs
+from hypothesis.strategies._internal.core import (
+    cacheable,
+    fixed_dictionaries,
+    NOTHING,
+    one_of,
+    sampled_from,
+    deferred
+)
 from hypothesis.strategies._internal.lazy import LazyStrategy
 from hypothesis.strategies._internal.strategies import (
     Ex,
 )
 
-# (mristin, 2020-12-06): These imports were needed to make the patch minimal
-# as well as use singletons (such as cache) from Hypothesis.
-from hypothesis.strategies._internal.core import (
-    cacheable,
-    deferred,
-    fixed_dictionaries,
-    NOTHING,
-    one_of,
-    sampled_from,
-    builds
-)
-
-# (mristin, 2020-12-06): This is part of our hook.
 import icontract.integration.with_hypothesis
+
+K = TypeVar("K")
+V = TypeVar("V")
+UniqueBy = Union[Callable[[Ex], Hashable], Tuple[Callable[[Ex], Hashable], ...]]
+# See https://github.com/python/mypy/issues/3186 - numbers.Real is wrong!
+Real = Union[int, float, Fraction, Decimal]
 
 @cacheable
 def from_type(thing: Type[Ex]) -> SearchStrategy[Ex]:
@@ -141,7 +135,8 @@ def from_type(thing: Type[Ex]) -> SearchStrategy[Ex]:
 def _from_type(thing: Type[Ex]) -> SearchStrategy[Ex]:
     # TODO: We would like to move this to the top level, but pending some major
     # refactoring it's hard to do without creating circular imports.
-    from hypothesis.strategies._internal import types
+    import hypothesis.strategies._internal.types as types
+    import icontract.integration.with_hypothesis.patched_types as patched_types
 
     if (
         hasattr(typing, "_TypedDictMeta")
@@ -227,7 +222,9 @@ def _from_type(thing: Type[Ex]) -> SearchStrategy[Ex]:
         and isinstance(getattr(thing, "__origin__", None), type)
         and getattr(thing, "__args__", None)
     ):
-        return types.from_typing_type(thing)
+        # (mristin, 2020-12-06): We need to propagate builds_with_preconditions.
+        return icontract.integration.with_hypothesis.patched_types.from_typing_type(thing)
+
     # If it's not from the typing module, we get all registered types that are
     # a subclass of `thing` and are not themselves a subtype of any other such
     # type.  For example, `Number -> integers() | floats()`, but bools() is
@@ -261,12 +258,9 @@ def _from_type(thing: Type[Ex]) -> SearchStrategy[Ex]:
         )
     # Finally, try to build an instance by calling the type object
     if not isabstract(thing):
-        # (mristin, 2020-12-06): This hooks into all classes with
-        # potential preconditions on their constructors.
-        if issubclass(thing, icontract.DBC):
-            return icontract.integration.with_hypothesis.builds_with_preconditions(thing)
+        # (mristin, 2020-12-06) This hook propagates inferring strategies with preconditions.
+        return icontract.integration.with_hypothesis.builds_with_preconditions(thing)
 
-        return builds(thing)
     subclasses = thing.__subclasses__()
     if not subclasses:
         raise ResolutionFailed(

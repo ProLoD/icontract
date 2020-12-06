@@ -2,6 +2,8 @@
 # pylint: disable=invalid-name
 # pylint: disable=unused-argument
 # pylint: disable=no-value-for-parameter
+import abc
+import collections
 import dataclasses
 import enum
 import fractions
@@ -9,7 +11,7 @@ import math
 import unittest
 import datetime
 import decimal
-from typing import List, Optional, Tuple, Any, TypedDict
+from typing import List, Optional, Tuple, Any, TypedDict, NamedTuple
 
 import hypothesis.strategies
 
@@ -317,10 +319,11 @@ class TestWithInferredStrategiesOnClasses(unittest.TestCase):
             def __repr__(self) -> str:
                 return "A()"
 
-        recorded_inputs = []  # type: List[Any]
-
         def some_func(a: A) -> None:
-            recorded_inputs.append(a)
+            pass
+
+        strategies = icontract.integration.with_hypothesis.infer_strategies(some_func)
+        self.assertEqual("{'a': builds(A)}", str(strategies))
 
         icontract.integration.with_hypothesis.test_with_inferred_strategies(some_func)
 
@@ -332,15 +335,16 @@ class TestWithInferredStrategiesOnClasses(unittest.TestCase):
             def __repr__(self) -> str:
                 return "A(x={})".format(self.x)
 
-        recorded_inputs = []  # type: List[Any]
-
         def some_func(a: A) -> None:
-            recorded_inputs.append(a)
+            pass
+
+        strategies = icontract.integration.with_hypothesis.infer_strategies(some_func)
+        self.assertEqual("{'a': builds(A)}", str(strategies))
 
         icontract.integration.with_hypothesis.test_with_inferred_strategies(some_func)
 
     def test_preconditions_with_heuristics(self) -> None:
-        class A:
+        class A(icontract.DBC):
             @icontract.require(lambda x: x > 0)
             def __init__(self, x: int):
                 self.x = x
@@ -348,15 +352,16 @@ class TestWithInferredStrategiesOnClasses(unittest.TestCase):
             def __repr__(self) -> str:
                 return "A(x={})".format(self.x)
 
-        recorded_inputs = []  # type: List[Any]
-
         def some_func(a: A) -> None:
-            recorded_inputs.append(a)
+            pass
+
+        strategies = icontract.integration.with_hypothesis.infer_strategies(some_func)
+        self.assertEqual("{'a': builds(A, x=integers(min_value=1))}", str(strategies))
 
         icontract.integration.with_hypothesis.test_with_inferred_strategies(some_func)
 
     def test_preconditions_without_heuristics(self) -> None:
-        class A:
+        class A(icontract.DBC):
             @icontract.require(lambda x: x > 0)
             @icontract.require(lambda x: x > math.sqrt(x))
             def __init__(self, x: float):
@@ -365,14 +370,17 @@ class TestWithInferredStrategiesOnClasses(unittest.TestCase):
             def __repr__(self) -> str:
                 return "A(x={})".format(self.x)
 
-        recorded_inputs = []  # type: List[Any]
-
         def some_func(a: A) -> None:
-            recorded_inputs.append(a)
+            pass
+
+        strategies = icontract.integration.with_hypothesis.infer_strategies(some_func)
+        self.assertEqual(
+            "{'a': builds(A, x=floats(min_value=0, exclude_min=True).filter(lambda x: x > math.sqrt(x)))}",
+            str(strategies))
 
         icontract.integration.with_hypothesis.test_with_inferred_strategies(some_func)
 
-    def test_recursion(self) -> None:
+    def test_composition(self) -> None:
         class A(icontract.DBC):
             @icontract.require(lambda x: x > 0)
             def __init__(self, x: int):
@@ -390,10 +398,42 @@ class TestWithInferredStrategiesOnClasses(unittest.TestCase):
             def __repr__(self) -> str:
                 return "B(a={!r}, y={})".format(self.a, self.y)
 
-        recorded_inputs = []  # type: List[Any]
-
         def some_func(b: B) -> None:
-            recorded_inputs.append(b)
+            pass
+
+        strategies = icontract.integration.with_hypothesis.infer_strategies(some_func)
+        self.assertEqual(
+            "{'b': builds(B, a=builds(A, x=integers(min_value=1)), y=integers(min_value=2021))}",
+            str(strategies))
+
+        icontract.integration.with_hypothesis.test_with_inferred_strategies(some_func)
+
+    def test_abstract_class(self) -> None:
+        class A(icontract.DBC):
+            @abc.abstractmethod
+            def do_something(self) -> None:
+                pass
+
+        class B(A):
+            @icontract.require(lambda x: x > 0)
+            def __init__(self, x: int):
+                self.x = x
+
+            def __repr__(self) -> str:
+                return "B(x={})".format(self.x)
+
+            def do_something(self) -> None:
+                pass
+
+        def some_func(a: A) -> None:
+            pass
+
+        strategies = icontract.integration.with_hypothesis.infer_strategies(some_func)
+        self.assertEqual(
+            "{'a': just("
+            "<class 'test_hypothesis.TestWithInferredStrategiesOnClasses.test_inheritance.<locals>.B'>)"
+            ".flatmap(from_type)}",
+            str(strategies))
 
         icontract.integration.with_hypothesis.test_with_inferred_strategies(some_func)
 
@@ -402,14 +442,15 @@ class TestWithInferredStrategiesOnClasses(unittest.TestCase):
             SOMETHING = 1
             ELSE = 2
 
-        recorded_inputs = []  # type: List[Any]
-
         def some_func(a: A) -> None:
-            recorded_inputs.append(a)
+            pass
+
+        strategies = icontract.integration.with_hypothesis.infer_strategies(some_func)
+        self.assertEqual("{'a': sampled_from(test_hypothesis.A)}", str(strategies))
 
         icontract.integration.with_hypothesis.test_with_inferred_strategies(some_func)
 
-    def test_data_class(self) -> None:
+    def test_composition_in_data_class(self) -> None:
         class A:
             @icontract.require(lambda x: x > 0)
             def __init__(self, x: int):
@@ -422,12 +463,14 @@ class TestWithInferredStrategiesOnClasses(unittest.TestCase):
         class B:
             a: A
 
-        recorded_inputs = []  # type: List[Any]
-
         def some_func(b: B) -> None:
-            recorded_inputs.append(b)
+            pass
 
-        # TODO: this test needs to be fixed -- recursion is not working as expected
+        strategies = icontract.integration.with_hypothesis.infer_strategies(some_func)
+        self.assertEqual(
+            "{'b': builds(B, a=builds(A, x=integers(min_value=1)))}",
+            str(strategies))
+
         icontract.integration.with_hypothesis.test_with_inferred_strategies(some_func)
 
     def test_typed_dict(self) -> None:
@@ -442,12 +485,14 @@ class TestWithInferredStrategiesOnClasses(unittest.TestCase):
         class B(TypedDict):
             a: A
 
-        recorded_inputs = []  # type: List[Any]
-
         def some_func(b: B) -> None:
-            recorded_inputs.append(b)
+            pass
 
-        # TODO: this test needs to be fixed -- recursion is not working as expected
+        strategies = icontract.integration.with_hypothesis.infer_strategies(some_func)
+        self.assertEqual(
+            "{'b': fixed_dictionaries({'a': builds(A, x=integers(min_value=1))}, optional={})}",
+            str(strategies))
+
         icontract.integration.with_hypothesis.test_with_inferred_strategies(some_func)
 
     def test_list(self) -> None:
@@ -459,15 +504,39 @@ class TestWithInferredStrategiesOnClasses(unittest.TestCase):
             def __repr__(self) -> str:
                 return "A(x={})".format(self.x)
 
-        recorded_inputs = []  # type: List[Any]
-
         def some_func(aa: List[A]) -> None:
-            recorded_inputs.append(aa)
+            pass
 
-        # TODO: this test needs to be fixed -- recursion is not working as expected
+        strategies = icontract.integration.with_hypothesis.infer_strategies(some_func)
+        self.assertEqual(
+            "{'aa': lists(builds(A, x=integers(min_value=1)))}",
+            str(strategies))
+
         icontract.integration.with_hypothesis.test_with_inferred_strategies(some_func)
 
-# TODO: test named tuples!
+    def test_named_tuples(self) -> None:
+        class A:
+            @icontract.require(lambda x: x > 0)
+            def __init__(self, x: int):
+                self.x = x
+
+            def __repr__(self) -> str:
+                return "A(x={})".format(self.x)
+
+        class B(NamedTuple):
+            a: A
+
+        def some_func(b: B) -> None:
+            pass
+
+        strategies = icontract.integration.with_hypothesis.infer_strategies(some_func)
+        self.assertEqual(
+            "{'b': builds(B, a=builds(A, x=integers(min_value=1)))}",
+            str(strategies))
+
+        icontract.integration.with_hypothesis.test_with_inferred_strategies(some_func)
+
+
 # TODO: test with union!
 
 if __name__ == '__main__':
