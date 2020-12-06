@@ -293,7 +293,7 @@ class DBCMeta(abc.ABCMeta):
     """
     Define a meta class that allows inheritance of the contracts.
 
-    The preconditions are weakned ("require else"), while postconditions ("ensure then") and invariants are
+    The preconditions are weakened ("require else"), while postconditions ("ensure then") and invariants are
     strengthened according to the inheritance rules of the design-by-contract.
     """
 
@@ -330,5 +330,5 @@ class DBCMeta(abc.ABCMeta):
             return cls
 
 
-class DBC(metaclass=DBCMeta):
+class DBC(abc.ABC, metaclass=DBCMeta):
     """Provide a standard way to create a class which can inherit the contracts."""

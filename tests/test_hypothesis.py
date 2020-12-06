@@ -372,9 +372,8 @@ class TestWithInferredStrategiesOnClasses(unittest.TestCase):
 
         icontract.integration.with_hypothesis.test_with_inferred_strategies(some_func)
 
-
     def test_recursion(self) -> None:
-        class A:
+        class A(icontract.DBC):
             @icontract.require(lambda x: x > 0)
             def __init__(self, x: int):
                 self.x = x
@@ -382,7 +381,7 @@ class TestWithInferredStrategiesOnClasses(unittest.TestCase):
             def __repr__(self) -> str:
                 return "A(x={})".format(self.x)
 
-        class B:
+        class B(icontract.DBC):
             @icontract.require(lambda y: y > 2020)
             def __init__(self, a: A, y: int):
                 self.a = a

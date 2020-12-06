@@ -22,6 +22,7 @@ import icontract._checkers
 import icontract._recompute
 import icontract._represent
 import icontract._types
+import icontract.integration.with_hypothesis.patched_from_type
 
 CallableT = TypeVar('CallableT', bound=Callable[..., Any])
 
@@ -335,7 +336,7 @@ def _make_strategy_with_min_max_for_type(
 ) -> hypothesis.strategies.SearchStrategy[T]:
     # yapf: enable
     if a_type == int:
-        # hypothesis.strategies.integers is always inclusive so we have to cut off the boundaries a bit 
+        # hypothesis.strategies.integers is always inclusive so we have to cut off the boundaries a bit
         # if they are exclusive.
         min_value = inferred.min_value
         if min_value is not None and not inferred.min_inclusive:
@@ -431,7 +432,7 @@ def _infer_strategies_recursively(
         # Set the basic strategy based on type for arguments for which we can not reduce the search space trivially
         # by filtering
         if arg_name not in contracts_for_arg:
-            strategies[arg_name] = builds_with_preconditions(a_type=type_hint)
+            strategies[arg_name] = icontract.integration.with_hypothesis.patched_from_type.from_type(type_hint)
             continue
 
         remaining_contracts = contracts_for_arg[arg_name]
@@ -455,7 +456,7 @@ def _infer_strategies_recursively(
             strategy = _make_strategy_with_min_max_for_type(a_type=type_hint, inferred=inferred)
 
         else:
-            strategy = builds_with_preconditions(a_type=type_hint)
+            strategy = icontract.integration.with_hypothesis.patched_from_type.from_type(type_hint)
 
         for contract in remaining_contracts:
             strategy = strategy.filter(contract.condition)
@@ -464,24 +465,21 @@ def _infer_strategies_recursively(
 
     return strategies
 
-
 def builds_with_preconditions(a_type: Type[T]) -> hypothesis.strategies.SearchStrategy[T]:
-    """Creates a strategy to generate instances of type ``a_type``."""
+    """
+    Creates a strategy to generate instances of type ``a_type`` which satisfy the preconditions on ``__init__``.
 
-    # TODO: ask Zac how to go about it?
-    # TODO: This needs some sort of recursion -- any chance we can hook into from_type?
-    # TODO: we don't really want to register any types of our own.
+    This function will be automatically registered with the type ``icontract.DBC`` as soon as you import
+    this module. This allows you to recursively build complex object graphs which will satisfy
+    the preconditions of their constructors in a completely seamless manner.
+    """
+    init_func = getattr(a_type, "__init__")
 
-    print(f"a_type is {a_type!r}")  # TODO: debug
-    if inspect.isclass(a_type):
-        init_func = getattr(a_type, "__init__")
+    strategies = infer_strategies(init_func)
+    return hypothesis.strategies.builds(a_type, **strategies)
 
-        strategies = infer_strategies(init_func)
-        print(f"a_type is {a_type!r}")  # TODO: debug
-        return hypothesis.strategies.builds(a_type, **strategies)
-
-    return hypothesis.strategies.from_type(a_type)
-
+# TODO: document in readme that all classes need to inherit from DBC
+hypothesis.strategies.register_type_strategy(custom_type=icontract.DBC, strategy=builds_with_preconditions)
 
 # TODO: document it in the README so that people can debug
 # yapf: disable
@@ -597,12 +595,10 @@ def test_with_inferred_strategies(func: CallableT) -> None:
 
     strategies = infer_strategies(func=func)
 
-    print(f"strategies is {strategies!r}")  # TODO: debug
+    print(f"final strategies in integrations is {strategies!r}")  # TODO: debug
 
     wrapped = hypothesis.given(**strategies)(execute)
     wrapped()
 
 # TODO: implement matching re.match and re.Pattern.math
 # TODO: use recomputed values to figure out if the name is a re.Pattern and the method is "match"
-
-# TODO: do this before the call with Zac!
