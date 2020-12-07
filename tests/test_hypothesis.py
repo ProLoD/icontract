@@ -13,13 +13,36 @@ import unittest
 from typing import List, Optional, Any, TypedDict, NamedTuple, Union
 
 import hypothesis.strategies
+import hypothesis.errors
 
 import icontract.integration.with_hypothesis
 
 
 class TestAssumePreconditions(unittest.TestCase):
-    # TODO: test assume preconditions that they fail with the expected exceptions
-    # TODO: test assume preconditions that they pass with no exception
+    def test_assumed_preconditions_pass(self)->None:
+        @icontract.require(lambda x: x > 0)
+        def some_func(x: int) -> None:
+            pass
+
+        assume_preconditions = icontract.integration.with_hypothesis.make_assume_preconditions(some_func)
+
+        assume_preconditions(x=100)
+
+    def test_assumed_preconditions_fail(self) -> None:
+        @icontract.require(lambda x: x > 0)
+        def some_func(x: int) -> None:
+            pass
+
+        assume_preconditions = icontract.integration.with_hypothesis.make_assume_preconditions(some_func)
+
+        unsatisfied_assumption = None  # type: Optional[hypothesis.errors.UnsatisfiedAssumption]
+        try:
+            assume_preconditions(x=-100)
+        except hypothesis.errors.UnsatisfiedAssumption as err:
+            unsatisfied_assumption = err
+
+        self.assertIsNotNone(unsatisfied_assumption)
+
     def test_without_preconditions(self) -> None:
         recorded_inputs = []  # type: List[Any]
 

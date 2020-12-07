@@ -29,12 +29,12 @@ CallableT = TypeVar('CallableT', bound=Callable[..., Any])
 T = TypeVar('T')
 
 
-def _assume_preconditions_always_satisfied(*args: Tuple[Any, ...], **kwargs: Dict[str, Any]) -> bool:
+def _assume_preconditions_always_satisfied(*args: Tuple[Any, ...], **kwargs: Dict[str, Any]) -> None:
     """Assume that the preconditions are always satisfied (say, when there are no preconditions)."""
-    return True
+    pass
 
 
-def make_assume_preconditions(func: CallableT) -> Callable[..., Any]:
+def make_assume_preconditions(func: CallableT) -> Callable[..., None]:
     """
     Create a function that assumes the preconditions are satisfied given the positional and keyword arguments.
 
@@ -77,7 +77,7 @@ def make_assume_preconditions(func: CallableT) -> Callable[..., Any]:
     param_names = list(sign.parameters.keys())
     kwdefaults = icontract._checkers.resolve_kwdefaults(sign=sign)
 
-    def assume_preconditions(*args, **kwargs):  # type: ignore
+    def assume_preconditions(*args, **kwargs) -> None:  # type: ignore
         """Accept only positional and keyword arguments that satisfy one of the precondition groups."""
         resolved_kwargs = icontract._checkers.kwargs_from_call(
             param_names=param_names, kwdefaults=kwdefaults, args=args, kwargs=kwargs)
@@ -97,7 +97,7 @@ def make_assume_preconditions(func: CallableT) -> Callable[..., Any]:
                     break
 
             if success:
-                return True
+                return
 
         if not success:
             raise hypothesis.errors.UnsatisfiedAssumption()
