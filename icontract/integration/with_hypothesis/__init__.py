@@ -12,8 +12,9 @@ import datetime
 import decimal
 import fractions
 import inspect
+import re
 import typing
-from typing import TypeVar, Callable, Any, List, Mapping, Optional, Union, Dict, Tuple, Type
+from typing import TypeVar, Callable, Any, List, Mapping, Optional, Union, Dict, Tuple, Type, AnyStr
 
 import hypothesis.errors
 import hypothesis.strategies
@@ -142,6 +143,19 @@ def _no_name_in_descendants(root: ast.expr, name: str) -> bool:
 
     return not found
 
+def _recompute(condition: Callable[..., Any], node: ast.expr) -> Tuple[Any, bool]:
+    """Recompute the value corresponding to the node."""
+    recompute_visitor = icontract._recompute.Visitor(
+        variable_lookup=icontract._represent.collect_variable_lookup(
+            condition=condition, condition_kwargs=None))
+
+    recompute_visitor.visit(node=node)
+
+    if node in recompute_visitor.recomputed_values:
+        return recompute_visitor.recomputed_values[node], True
+
+    return None, False
+
 
 def _infer_min_max_from_node(
         condition: Callable[..., bool], node: ast.Compare, arg_name: str
@@ -150,21 +164,6 @@ def _infer_min_max_from_node(
     # pylint: disable=too-many-boolean-expressions
     # pylint: disable=too-many-return-statements
     # pylint: disable=too-many-branches
-    pass  # for pydocstyle
-
-    def recompute(a_node: ast.expr) -> Tuple[Any, bool]:
-        """Recompute the value corresponding to the node."""
-        recompute_visitor = icontract._recompute.Visitor(
-            variable_lookup=icontract._represent.collect_variable_lookup(
-                condition=condition, condition_kwargs=None))
-
-        recompute_visitor.visit(node=a_node)
-
-        if a_node in recompute_visitor.recomputed_values:
-            return recompute_visitor.recomputed_values[a_node], True
-
-        return None, False
-
     if len(node.comparators) == 1:
         comparator = node.comparators[0]
         operation = node.ops[0]
@@ -173,7 +172,7 @@ def _infer_min_max_from_node(
         if isinstance(node.left, ast.Name) and \
                 node.left.id == arg_name and \
                 _no_name_in_descendants(root=comparator, name=arg_name):
-            value, recomputed = recompute(a_node=comparator)
+            value, recomputed = _recompute(condition=condition, node=comparator)
 
             # If we can not recompute the value, we also can not infer the bounds.
             if not recomputed:
@@ -201,7 +200,7 @@ def _infer_min_max_from_node(
         if _no_name_in_descendants(root=node.left, name=arg_name) and \
                 isinstance(comparator, ast.Name) and \
                 comparator.id == arg_name:
-            value, recomputed = recompute(a_node=node.left)
+            value, recomputed = _recompute(condition=condition, node=node.left)
 
             # If we can not recompute the value, we also can not infer the bounds.
             if not recomputed:
@@ -234,13 +233,13 @@ def _infer_min_max_from_node(
                 node.comparators[0].id == arg_name and \
                 _no_name_in_descendants(root=node.comparators[1], name=arg_name):
 
-            left_value, recomputed = recompute(a_node=node.left)
+            left_value, recomputed = _recompute(condition=condition, node=node.left)
 
             # If we can not recompute the left value, we also can not infer the bounds.
             if not recomputed:
                 return None
 
-            right_value, recomputed = recompute(a_node=node.comparators[1])
+            right_value, recomputed = _recompute(condition=condition, node=node.comparators[1])
 
             # If we can not recompute the right value, we also can not infer the bounds.
             if not recomputed:
@@ -272,6 +271,25 @@ def _infer_min_max_from_node(
 
     return None
 
+def _body_node_from_condition(condition: Callable[..., Any]) -> Optional[ast.expr]:
+    """Try to extract the body node of the contract's lambda condition."""
+    if not icontract._represent.is_lambda(a_function=condition):
+        return None
+
+    lines, condition_lineno = inspect.findsource(condition)
+    filename = inspect.getsourcefile(condition)
+    assert filename is not None
+
+    decorator_inspection = icontract._represent.inspect_decorator(
+        lines=lines, lineno=condition_lineno, filename=filename)
+    lambda_inspection = icontract._represent.find_lambda_condition(decorator_inspection=decorator_inspection)
+
+    assert lambda_inspection is not None, \
+        "Expected lambda_inspection to be non-None if _is_lambda is True on: {}".format(condition)
+
+    body_node = lambda_inspection.node.body
+
+    return body_node
 
 # yapf: disable
 def _infer_min_max_from_preconditions(
@@ -290,26 +308,14 @@ def _infer_min_max_from_preconditions(
     remaining_contracts = []  # type: List[icontract._types.Contract]
 
     for contract in contracts:
-        condition = contract.condition  # abbreviate for readability
+        body_node = _body_node_from_condition(condition=contract.condition)
 
-        if not icontract._represent.is_lambda(a_function=condition):
+        if body_node is None:
             remaining_contracts.append(contract)
             continue
 
-        lines, condition_lineno = inspect.findsource(condition)
-        filename = inspect.getsourcefile(condition)
-        assert filename is not None
-
-        decorator_inspection = icontract._represent.inspect_decorator(
-            lines=lines, lineno=condition_lineno, filename=filename)
-        lambda_inspection = icontract._represent.find_lambda_condition(decorator_inspection=decorator_inspection)
-
-        assert lambda_inspection is not None, \
-            "Expected lambda_inspection to be non-None if _is_lambda is True on: {}".format(condition)
-
-        body_node = lambda_inspection.node.body
         if isinstance(body_node, ast.Compare):
-            inferred = _infer_min_max_from_node(condition=condition, node=body_node, arg_name=arg_name)
+            inferred = _infer_min_max_from_node(condition=contract.condition, node=body_node, arg_name=arg_name)
 
             if inferred is not None:
                 # We need to constrain min and max values.
@@ -395,6 +401,95 @@ def _make_strategy_with_min_max_for_type(
 
     return strategy
 
+# We need to compile a dummy pattern so that we can compare addresses of re.Pattern.match functions.
+_DUMMY_RE = re.compile(r'something')
+
+def _infer_regexp_from_condition(arg_name: str, condition: Callable[..., Any]) -> Optional[re.Pattern]:
+    """Try to infer the regular expression pattern from a precondition."""
+    body_node = _body_node_from_condition(condition=condition)
+    if body_node is None:
+        return None
+
+    if not isinstance(body_node, ast.Call):
+        return None
+
+    if not _no_name_in_descendants(root=body_node.func, name=arg_name):
+        return None
+
+    if not isinstance(body_node.func, ast.Attribute):
+        return None
+
+    if body_node.func.attr != "match":
+        return None
+
+    callee, recomputed = _recompute(condition=condition, node=body_node.func.value)
+    if not recomputed:
+        return None
+
+    if callee == re:
+        # Match "re.match(r'Some pattern', s, *args, *kwargs)
+        if (
+                len(body_node.args) >= 2 and
+                _no_name_in_descendants(root=body_node.args[0], name=arg_name) and
+                isinstance(body_node.args[1], ast.Name) and
+                body_node.args[1].id == arg_name and
+                not any(_no_name_in_descendants(root=arg, name=arg_name) for arg in body_node.args[2:])
+        ):
+            # Recompute the pattern
+            args = []  # type: List[Any]
+            for arg in [body_node.args[0]] + body_node.args[2:]:
+                value, recomputed = _recompute(condition=condition, node=arg)
+                if not recomputed:
+                    return None
+
+                args.append(value)
+
+            kwargs = dict()  # type: Dict[str, Any]
+            for keyword in body_node.keywords:
+                value, recomputed = _recompute(condition=condition, node=keyword.value)
+                if not recomputed:
+                    return None
+
+                kwargs[keyword.arg] = value
+
+            pattern = re.compile(*args, **kwargs)
+            return pattern
+
+    elif isinstance(callee, re.Pattern):
+        return callee
+
+    return None
+
+
+
+def _infer_str_strategy_from_preconditions(
+        arg_name: str,
+        contracts: List[icontract._types.Contract]
+) -> Tuple[Optional[hypothesis.strategies.SearchStrategy], List[icontract._types.Contract]]:
+    """
+    Try to match code patterns on AST of the preconditions contracts and infer the string strategy.
+
+    Return (strategy if possible, remaining contracts).
+    """
+    found_idx = -1  # Index of the contract that defines the pattern, -1 if not found
+    re_pattern = None  # type: Optional[re.Pattern[AnyStr]]
+
+    for i, contract in enumerate(contracts):
+        re_pattern = _infer_regexp_from_condition(arg_name=arg_name, condition=contract.condition)
+        if re_pattern is not None:
+            found_idx = i
+            break
+
+    if found_idx == -1:
+        return None, contracts[:]
+
+    assert re_pattern is not None
+    return (
+        hypothesis.strategies.from_regex(regex=re_pattern),
+           contracts[:found_idx] + contracts[found_idx+1:]
+    )
+
+
 
 # yapf: disable
 def _infer_strategies_recursively(
@@ -437,6 +532,8 @@ def _infer_strategies_recursively(
 
         remaining_contracts = contracts_for_arg[arg_name]
 
+        strategy = None  # type: Optional[hypothesis.strategies.SearchStrategy]
+
         # yapf: disable
         if type_hint in [
             int, float, fractions.Fraction, decimal.Decimal, datetime.date, datetime.datetime,
@@ -455,7 +552,11 @@ def _infer_strategies_recursively(
 
             strategy = _make_strategy_with_min_max_for_type(a_type=type_hint, inferred=inferred)
 
-        else:
+        if strategy is None and type_hint == str:
+            strategy, remaining_contracts = _infer_str_strategy_from_preconditions(
+                arg_name=arg_name, contracts=contracts_for_arg[arg_name])
+
+        if strategy is None:
             strategy = icontract.integration.with_hypothesis.patched_from_type.from_type(type_hint)
 
         for contract in remaining_contracts:

@@ -287,4 +287,4 @@ if __name__ == "__main__":
     writeln_utf8("Benchmarking Hypothesis testing:")
     writeln_utf8('')
     measure_functions()
-# TODO: include this in Readme
+# TODO: include the benchmark in the readme
