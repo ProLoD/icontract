@@ -71,4 +71,10 @@ setup(
         ]
     },
     py_modules=['icontract'],
-    package_data={"icontract": ["py.typed"]})
+    package_data={"icontract": ["py.typed"]},
+    entry_points={
+        'console_scripts': [
+            'pyicontract-hypothesis = icontract.integration.with_hypothesis.icontract_hypothesis:main'
+        ],
+    }
+)
