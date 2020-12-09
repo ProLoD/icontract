@@ -4,17 +4,24 @@ import icontract
 
 
 @icontract.require(lambda x: x > 0)
-def some_func(x: int) -> None:
+def testable_some_func(x: int) -> None:
     pass
 
 
-def some_func_to_be_excluded(x: int) -> None:
+def untestable_some_func(x: int) -> None:
+    # We need more lines so that we can test the overlaps easily.
+    pass
+    pass
     pass
 
-
-def another_func_to_be_excluded(x: int) -> None:
+def untestable_another_func(x: int) -> None:
     # pyicontract-hypothesis: disable
     pass
+
+# pyicontract-hypothesis: disable
+def untestable_yet_another_func(x: int) -> None:
+    pass
+# pyicontract-hypothesis: enable
 
 
 class A:

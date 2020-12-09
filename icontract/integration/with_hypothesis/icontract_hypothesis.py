@@ -4,61 +4,121 @@
 import argparse
 import collections
 import contextlib
-import imp
+import importlib.machinery
 import importlib
+import inspect
 import io
 import json
 import pathlib
 import re
 import sys
-from typing import List, Optional, Tuple, TextIO, Mapping, Any, MutableMapping, Union
+import tokenize
+import types
+from typing import List, Optional, Tuple, TextIO, Mapping, Any, MutableMapping, Union, Callable
 
+import asttokens
+
+import icontract
+
+
+class LineRange:
+    """Represent a line range (indexed from 1, both first and last inclusive)."""
+    def __init__(self, first: int, last: int)->None:
+        """Initialize with the given values."""
+        self.first = first
+        self.last = last
 
 class ParamsGeneral:
-    """Represent general program parameters specified regardless of the subcommand."""
+    """Represent general program parameters specified regardless of the command."""
 
-    def __init__(self, module: str, include: List[re.Pattern], exclude: List[re.Pattern]) -> None:
-        self.module = module
+    # yapf: disable
+    def __init__(
+            self,
+            include: List[Union[re.Pattern, LineRange]],
+            exclude: List[Union[re.Pattern, LineRange]]
+    ) -> None:
+        # yapf: enable
         self.include = include
         self.exclude = exclude
 
+_LINE_RANGE_RE = re.compile(r'^\s*(?P<first>[0-9]|[1-9][0-9]+)(\s*-\s*(?P<last>[1-9]|[1-9][0-9]+))?\s*$')
 
+def _parse_point_spec(text: str)->Tuple[Optional[Union[LineRange, re.Pattern]], List[str]]:
+    """
+    Try to parse the given specification of function point(s).
+    
+    Return (parsed point spec, errors if any)
+    """
+    errors = []  # type: List[str]
+
+    mtch = _LINE_RANGE_RE.match(text)
+    if mtch:
+        if mtch.group('last') is None:
+            first = int(mtch.group('first'))
+            if first <= 0:
+                errors.append("Unexpected line index (expected to start from 1): {}".format(text))
+                return None, errors
+
+            return LineRange(first=int(mtch.group('first')), last=first), errors
+        else:
+            first = int(mtch.group('first'))
+            last = int(mtch.group('last'))
+
+            if first <= 0:
+                errors.append("Unexpected line index (expected to start from 1): {}".format(text))
+                return None, errors
+                
+            if last < first:
+                errors.append("Unexpected line range (last < first): {}".format(text))
+                return None, errors
+            
+            else:
+                return LineRange(first=int(mtch.group('first')), last=int(mtch.group('last'))), errors
+
+    try:
+        pattern = re.compile(text)
+        return pattern, errors
+    except re.error as err:
+        errors.append("Failed to parse the pattern {}: {}".format(text, err))
+        return None, errors
+        
 def _parse_general_params(args: argparse.Namespace) -> Tuple[Optional[ParamsGeneral], List[str]]:
     """
-    Try to parse general parameters of the program (regardless of the subcommand).
+    Try to parse general parameters of the program (regardless of the command).
 
-    Return (parsed parameters, error if any).
+    Return (parsed parameters, errors if any).
     """
     errors = []  # type: List[str]
 
     include = []  # type: List[re.Pattern]
     if args.include is not None:
-        for pattern_str in args.include:
-            try:
-                pattern = re.compile(pattern_str)
-                include.append(pattern)
-            except re.error as err:
-                errors.append("Failed to parse the include pattern {}: {}".format(pattern_str, err))
+        for include_str in args.include:
+            point_spec, point_spec_errors = _parse_point_spec(text=include_str)
+            errors.extend(point_spec_errors)
+            
+            if not point_spec_errors:
+                include.append(point_spec)
 
     exclude = []  # type: List[re.Pattern]
     if args.exclude is not None:
-        for pattern_str in args.exclude:
-            try:
-                pattern = re.compile(pattern_str)
-                exclude.append(pattern)
-            except re.error as err:
-                errors.append("Failed to parse the exclude pattern {}: {}".format(pattern_str, err))
+        for exclude_str in args.exclude:
+            point_spec, point_spec_errors = _parse_point_spec(text=exclude_str)
+            errors.extend(point_spec_errors)
+
+            if not point_spec_errors:
+                exclude.append(point_spec)
 
     if errors:
         return None, errors
 
-    return ParamsGeneral(module=args.module, include=include, exclude=exclude), []
+    return ParamsGeneral(include=include, exclude=exclude), errors
 
 
 class ParamsTest:
-    """Represent parameters of the subcommand "test"."""
+    """Represent parameters of the command "test"."""
 
-    def __init__(self, setting: Mapping[str, Any]) -> None:
+    def __init__(self, path: pathlib.Path, setting: Mapping[str, Any]) -> None:
+        self.path = path
         self.setting = setting
 
 
@@ -67,62 +127,69 @@ _SETTING_STATEMENT_RE = re.compile(r'^(?P<identifier>[a-zA-Z_][a-zA-Z_0-9]*)\s*=
 
 def _parse_test_params(args: argparse.Namespace) -> Tuple[Optional[ParamsTest], List[str]]:
     """
-    Try to parse the parameters of the subcommand "test".
+    Try to parse the parameters of the command "test".
 
     Return (parsed parameters, errors if any).
     """
-    text = args.setting
     errors = []  # type: List[str]
+
+    path = pathlib.Path(args.path)
+
     setting = collections.OrderedDict()  # type: MutableMapping[str, Any]
-    parts = text.split(";")
 
-    for i, part in enumerate(parts):
-        mtch = _SETTING_STATEMENT_RE.match(part)
-        if not mtch:
-            errors.append("Invalid setting statement {}. Expected statement to match {}, but got: {}".format(
-                i + 1, _SETTING_STATEMENT_RE.pattern, part))
+    if args.setting is not None:
+        for i, statement in enumerate(args.setting):
+            mtch = _SETTING_STATEMENT_RE.match(statement)
+            if not mtch:
+                errors.append("Invalid setting statement {}. Expected statement to match {}, but got: {}".format(
+                    i + 1, _SETTING_STATEMENT_RE.pattern, statement))
 
-            return None, errors
+                return None, errors
 
-        identifier = mtch.group("identifier")
-        value_str = mtch.group("value")
+            identifier = mtch.group("identifier")
+            value_str = mtch.group("value")
 
-        try:
-            value = json.loads(value_str)
-        except json.decoder.JSONDecodeError as error:
-            errors.append("Failed to parse the value of the setting {}: {}".format(identifier, error))
-            return None, errors
+            try:
+                value = json.loads(value_str)
+            except json.decoder.JSONDecodeError as error:
+                errors.append("Failed to parse the value of the setting {}: {}".format(identifier, error))
+                return None, errors
 
-        setting[identifier] = value
+            setting[identifier] = value
 
-    return ParamsTest(setting=setting), []
+    if errors:
+        return None, errors
+
+    return ParamsTest(path=path, setting=setting), errors
 
 
 class ParamsGhostwrite:
-    """Represent parameters of the subcommand "ghostwrite"."""
+    """Represent parameters of the command "ghostwrite"."""
 
-    def __init__(self, output: Optional[pathlib.Path], explicit: bool) -> None:
+    def __init__(self, module: str, output: Optional[pathlib.Path], explicit: bool, bare: bool) -> None:
+        self.module = module
         self.output = output
         self.explicit = explicit
+        self.bare = bare
 
 
 def _parse_ghostwrite_params(args: argparse.Namespace) -> Tuple[Optional[ParamsGhostwrite], List[str]]:
     """
-    Try to parse the parameters of the subcommand "ghostwrite".
+    Try to parse the parameters of the command "ghostwrite".
 
     Return (parsed parameters, errors if any).
     """
     output = pathlib.Path(args.output) if args.output != '-' else None
 
-    return ParamsGhostwrite(output=output, explicit=args.explicit), []
+    return ParamsGhostwrite(module=args.module, output=output, explicit=args.explicit, bare=args.bare), []
 
 
 class Params:
     """Represent the parameters of the program."""
 
-    def __init__(self, general: ParamsGeneral, subcommand: Union[ParamsTest, ParamsGhostwrite]) -> None:
+    def __init__(self, general: ParamsGeneral, command: Union[ParamsTest, ParamsGhostwrite]) -> None:
         self.general = general
-        self.subcommand = subcommand
+        self.command = command
 
 
 def _parse_args_to_params(args: argparse.Namespace) -> Tuple[Optional[Params], List[str]]:
@@ -136,25 +203,25 @@ def _parse_args_to_params(args: argparse.Namespace) -> Tuple[Optional[Params], L
     general, general_errors = _parse_general_params(args=args)
     errors.extend(general_errors)
 
-    subcommand = None  # type: Optional[Union[ParamsTest, ParamsGhostwrite]]
+    command = None  # type: Optional[Union[ParamsTest, ParamsGhostwrite]]
     if args.command == 'test':
-        test, subcommand_errors = _parse_test_params(args=args)
-        errors.extend(subcommand_errors)
+        test, command_errors = _parse_test_params(args=args)
+        errors.extend(command_errors)
 
-        subcommand = test
+        command = test
 
     elif args.command == 'ghostwrite':
-        ghostwrite, subcommand_errors = _parse_ghostwrite_params(args=args)
-        errors.extend(subcommand_errors)
-        subcommand = ghostwrite
+        ghostwrite, command_errors = _parse_ghostwrite_params(args=args)
+        errors.extend(command_errors)
+        command = ghostwrite
 
     if errors:
         return None, errors
 
     assert general is not None
-    assert subcommand is not None
+    assert command is not None
 
-    return Params(general=general, subcommand=subcommand), []
+    return Params(general=general, command=command), []
 
 
 def _make_argument_parser() -> argparse.ArgumentParser:
@@ -167,15 +234,21 @@ def _make_argument_parser() -> argparse.ArgumentParser:
     test_parser = subparsers.add_parser(
         "test", help="Test the functions automatically by inferring search strategies and preconditions")
 
+    test_parser.add_argument("-p", "--path", help="Path to the Python file to test", required=True)
+
     test_parser.add_argument(
         "--setting",
         help=("Specify settings for Hypothesis\n\n"
               "The settings are separated by ';' and assigned by '='."
               "The value of the setting needs to be encoded as JSON.\n\n"
-              "Example: 'max_examples=500;deadline=5000;suppress_health_check=2"))
+              "Example: max_examples=500"),
+        nargs="*"
+    )
 
     ghostwriter_parser = subparsers.add_parser(
         "ghostwrite", help="Ghostwrite the unit test module based on inferred search strategies")
+
+    ghostwriter_parser.add_argument("-m", "--module", help="Module to process", required=True)
 
     ghostwriter_parser.add_argument(
         "-o", "--output",
@@ -189,14 +262,34 @@ def _make_argument_parser() -> argparse.ArgumentParser:
               "just want to use ghostwriting as a starting point."),
         action='store_true')
 
+    ghostwriter_parser.add_argument(
+        "--bare",
+        help=("Print only the body of the tests and omit header/footer "
+              "(such as TestCase class or import statements).\n\n"
+              "This is useful when you only want to inspect a single test or "
+              "include a single test function in a custom test suite."),
+        action='store_true')
+
     for subparser in [test_parser, ghostwriter_parser]:
-        subparser.add_argument("-m", "--module", help="Module to process", required=True)
-        subparser.add_argument("-i", "--include", help="Regular expressions of the functions to process",
-                               required=False,
-                               nargs="*")
-        subparser.add_argument("-e", "--exclude",
-                               help="Regular expressions of the functions to exclude from processing",
-                               required=False, nargs="*")
+        subparser.add_argument(
+            "-i", "--include",
+            help=("Regular expressions, lines or line ranges of the functions to process\n\n"
+                  "If a line or line range overlaps the body of a function, the function is considered included."
+                  "Example 1: ^do_something.*$\n"
+                  "Example 2: 3\n"
+                  "Example 3: 34-65"),
+            required=False,
+            nargs="*")
+
+        subparser.add_argument(
+            "-e", "--exclude",
+            help=("Regular expressions of the functions to exclude from processing"
+                  "If a line or line range overlaps the body of a function, the function is considered excluded."
+                  "Example 1: ^do_something.*$\n"
+                  "Example 2: 3\n"
+                  "Example 3: 34-65"),
+            default=['^_.*$'],
+            nargs="*")
 
     return parser
 
@@ -233,6 +326,86 @@ def _parse_args(parser: argparse.ArgumentParser, argv: List[str]) -> Tuple[Optio
             out.seek(0)
             return None, out.read(), err.read()
 
+_PYICONTRACT_HYPOTHESIS_DIRECTIVE_RE = re.compile(r'#\s*pyicontract-hypothesis\s*:\s*(?P<value>disable|enable)')
+
+class Point:
+    """Represent a testable function."""
+    @icontract.require(lambda srow: srow > 0)
+    @icontract.require(lambda erow: erow > 0)
+    @icontract.require(lambda srow, erow: srow <= erow)
+    def __init__(self, first_row: int, last_row: int, func: Callable[..., Any]) -> None:
+        """
+        Initialize with the given values.
+
+        First and last row are both inclusive.
+        """
+        self.first_row = first_row
+        self.last_row = last_row
+        self.func = func
+
+def _select_points(
+        source_code: str,
+        mod: types.ModuleType,
+        include: List[Union[LineRange, re.Pattern]],
+        exclude: List[Union[LineRange, re.Pattern]]
+)->Tuple[List[Callable[..., Any]], List[str]]:
+    points = []  # type: List[Point]
+
+    for key in dir(mod):
+        value = getattr(mod, key)
+        if inspect.isfunction(value):
+            func = value  # type: Callable[..., Any]
+            source_lines, srow = inspect.getsourcelines(func)
+
+            point = Point(first_row=srow, last_row = srow+len(source_lines) - 1, func=func)
+            points.append(point)
+
+    # TODO: exclude functions if they have the directive in the body
+    # TODO: exclude ranges of functions if the comment is in the root
+
+    return [], []
+
+
+def test(general: ParamsGeneral, command: ParamsTest)->List[str]:
+    """
+    Test the specified functions.
+
+    Return errors if any.
+    """
+    if not command.path.exists():
+        return ['The file to be tested does not exist: {}'.format(command.path)]
+
+    try:
+        source_code = command.path.read_text(encoding='utf-8')
+    except Exception as error:
+        return ['Failed to read the file {}: {}'.format(command.path, error)]
+
+    fullname = re.sub(r'[^A-Za-z0-9_]', '_', command.path.stem)
+
+    mod = None  # type: Optional[types.ModuleType]
+    try:
+        loader = importlib.machinery.SourceFileLoader(fullname=fullname, path=str(command.path))
+        mod = types.ModuleType(loader.name)
+        loader.exec_module(mod)
+    except Exception as error:
+        return ['Failed to import the file {}: {}'.format(command.path, error)]
+
+    assert mod is not None, "Expected mod to be set before"
+
+    points, errors = _select_points(source_code=source_code, mod=mod, include=general.include, exclude=general.exclude)
+    if errors:
+        return errors
+
+    print(f"points is {points!r}")  # TODO: debug
+
+
+def ghostwrite(general: ParamsGeneral, command: ParamsGhostwrite)->Tuple[str, List[str]]:
+    """
+    Write a unit test module for the specified functions.
+
+    Return (generated code, errors if any).
+    """
+    raise NotImplementedError()
 
 def testable_main(argv: List[str], stdout: TextIO, stderr: TextIO) -> int:
     """Execute the testable_main routine."""
@@ -244,18 +417,24 @@ def testable_main(argv: List[str], stdout: TextIO, stderr: TextIO) -> int:
     if args is None:
         return 1
 
-    params, errs = _parse_args_to_params(args=args)
-    if errs:
-        for err in errs:
-            print(err, file=stderr)
+    params, errors = _parse_args_to_params(args=args)
+    if errors:
+        for error in errors:
+            print(error, file=stderr)
             return 1
 
-    try:
-        module = importlib.import_module(name=params.general.module)
-    except Exception as err:
-        raise RuntimeError("Error loading the module: {}".format(params.general.module)) from err
+    if isinstance(params.command, ParamsTest):
+        errors = test(general=params.general, command=params.command)
+    elif isinstance(params.command, ParamsGhostwrite):
+        errors = ghostwrite(general=params.general, command=params.command)
+    else:
+        raise AssertionError("Unhandled command: {}".format(params))
 
-    print(dir(module))
+    if errors:
+        for error in errors:
+            print(error, file=stderr)
+            return 1
+
     return 0
 
 
