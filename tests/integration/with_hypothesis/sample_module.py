@@ -15,7 +15,7 @@ def untestable_some_func(x: int) -> None:
     pass
 
 def untestable_another_func(x: int) -> None:
-    # pyicontract-hypothesis: disable
+    # pyicontract-hypothesis: disable-for-this-function
     pass
 
 # pyicontract-hypothesis: disable
